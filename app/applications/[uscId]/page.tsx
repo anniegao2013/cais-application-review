@@ -1,0 +1,633 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
+
+import {
+  Application,
+  Assignment,
+  Review,
+  ReviewScore,
+  OverallScore,
+} from "@/lib/types";
+
+import { CRITERIA } from "@/lib/scoring";
+import { useSession } from "@/lib/auth-client";
+import { reviewerName } from "@/config/reviewers";
+import Link from "next/link";
+
+type DetailData = {
+  application: Application;
+  assignments: Assignment[];
+  reviews: Review[];
+};
+
+type DashboardItem = {
+  application: Application;
+  assignments: Assignment[];
+  reviews: Review[];
+};
+
+export default function ApplicationDetail() {
+  const { uscId } =
+    useParams<{ uscId: string }>();
+
+  const [data, setData] =
+    useState<DetailData | null>(null);
+
+  const [loading, setLoading] =
+    useState(true);
+
+  const [working, setWorking] =
+    useState(false);
+
+  const [editingReview, setEditingReview] =
+    useState(false);
+
+  const [nextAppId, setNextAppId] =
+    useState<string | null>(null);
+
+  const [nextAppsLoading, setNextAppsLoading] =
+    useState(true);
+
+  const { data: session } = useSession();
+
+  const myEmail = session?.user?.email;
+
+  function reload() {
+    return fetch(
+      `/api/applications/${uscId}`
+    )
+      .then((response) => response.json())
+      .then((result) => setData(result));
+  }
+
+  useEffect(() => {
+    setLoading(true);
+
+    reload().then(() => setLoading(false));
+  }, [uscId]);
+
+  useEffect(() => {
+    if (!myEmail) {
+      return;
+    }
+
+    async function loadNextApp() {
+      setNextAppsLoading(true);
+
+      try {
+        const response = await fetch(
+          "/api/applications"
+        );
+
+        const result = await response.json();
+
+        const awaitingApps =
+          (result.items as DashboardItem[])
+            .filter((item) =>
+              item.assignments.some(
+                (assignment) =>
+                  assignment.reviewerEmail ===
+                    myEmail &&
+                  assignment.status === "assigned"
+              )
+            );
+
+        const currentIndex =
+          awaitingApps.findIndex(
+            (item) =>
+              item.application.uscId === uscId
+          );
+
+        if (
+          currentIndex !== -1 &&
+          currentIndex <
+            awaitingApps.length - 1
+        ) {
+          setNextAppId(
+            awaitingApps[
+              currentIndex + 1
+            ].application.uscId
+          );
+        } else {
+          setNextAppId(null);
+        }
+      } finally {
+        setNextAppsLoading(false);
+      }
+    }
+
+    loadNextApp();
+  }, [uscId, myEmail]);
+
+  if (loading) {
+    return <p className="p-8">Loading…</p>;
+  }
+
+  if (!data?.application) {
+    return <p className="p-8">Not found.</p>;
+  }
+
+  const app = data.application;
+
+  const activeAssignment =
+    data.assignments.find(
+      (assignment) =>
+        assignment.reviewerEmail === myEmail &&
+        assignment.status === "assigned"
+    );
+
+  const recusedAssignment =
+    data.assignments.find(
+      (assignment) =>
+        assignment.reviewerEmail === myEmail &&
+        assignment.status === "recused"
+    );
+
+  const myReview =
+    data.reviews.find(
+      (review) =>
+        review.reviewerEmail === myEmail
+    );
+
+  const iReviewed = Boolean(myReview);
+
+  const canReview = Boolean(activeAssignment);
+
+  async function recuse() {
+    setWorking(true);
+
+    try {
+      const response = await fetch(
+        "/api/assignments/recuse",
+        {
+          method: "POST",
+
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+
+          body: JSON.stringify({
+            uscId,
+          }),
+        }
+      );
+
+      const result =
+        await response.json();
+
+      if (!response.ok) {
+        alert(
+          result.error ??
+            "Failed to recuse from application."
+        );
+
+        return;
+      }
+
+      alert(
+        `${result.replacementReviewer.name} has been assigned as your replacement.`
+      );
+
+      await reload();
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  return (
+    <div className="p-8 max-w-3xl mx-auto">
+      <Link
+        href="/dashboard?filter=mine&reviewFilter=awaiting"
+        className="text-sm underline mb-4 inline-block"
+      >
+        ← Back to awaiting reviews
+      </Link>
+
+      <h1 className="text-2xl font-bold mb-1">
+        {app.name}
+      </h1>
+
+      <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+        {app.year} · {app.majorMinor} ·{" "}
+        {app.email}
+      </p>
+
+      <div className="flex items-center justify-between text-sm border rounded-lg p-3 mb-6">
+        <p className="text-gray-500 dark:text-gray-400">
+          {data.assignments.length === 0
+            ? "Unassigned"
+            : data.assignments
+                .filter(
+                  (assignment) =>
+                    assignment.status !==
+                    "reassigned"
+                )
+                .map(
+                  (assignment) =>
+                    `${reviewerName(
+                      assignment.reviewerEmail
+                    )} (${assignment.status})`
+                )
+                .join(", ")}
+        </p>
+
+        {canReview && (
+          <button
+            onClick={recuse}
+            disabled={working}
+            className="px-2 py-1 rounded border text-xs text-red-600 dark:text-red-400 disabled:opacity-40"
+          >
+            Recuse (conflict of interest)
+          </button>
+        )}
+      </div>
+
+      <section className="space-y-4">
+        <Field
+          label="Why do you want to join?"
+          value={app.whyJoin}
+        />
+
+        <Field
+          label="Personal AI story"
+          value={app.aiResponse}
+        />
+
+        <Field
+          label="Programming / ML experience"
+          value={app.experienceResponse}
+        />
+
+        <Field
+          label="AI social issue proposal"
+          value={app.socialResponse}
+        />
+
+        <Field
+          label="Passion response"
+          value={app.passionResponse}
+        />
+      </section>
+
+      {editingReview && myReview ? (
+        <ReviewForm
+          uscId={uscId}
+          existingReview={myReview}
+          onSubmitted={async () => {
+            setEditingReview(false);
+            await reload();
+          }}
+          onCancel={() =>
+            setEditingReview(false)
+          }
+        />
+      ) : iReviewed ? (
+        <div className="mt-6 space-y-2">
+          <div className="flex items-center justify-between">
+            <h2 className="font-bold">
+              Reviews
+            </h2>
+
+            <button
+              onClick={() =>
+                setEditingReview(true)
+              }
+              className="px-3 py-1 rounded border text-sm"
+            >
+              Edit your review
+            </button>
+          </div>
+
+          {data.reviews.map((review) => (
+            <div
+              key={review.reviewerEmail}
+              className="border rounded-lg p-4"
+            >
+              <p className="font-semibold text-sm">
+                {reviewerName(
+                  review.reviewerEmail
+                )}
+
+                {review.reviewerEmail ===
+                  myEmail &&
+                  " (you)"}
+              </p>
+
+              <p className="text-sm">
+                Experience: {
+                  review.experienceScore
+                }{" "}
+                · Research: {
+                  review.researchScore
+                }{" "}
+                · Quality: {
+                  review.qualityScore
+                }{" "}
+                · Overall: {
+                  review.overallScore
+                } / 4
+              </p>
+
+              <p className="text-sm whitespace-pre-wrap">
+                {review.notes}
+              </p>
+            </div>
+          ))}
+
+          <div className="flex justify-end pt-4">
+            {!nextAppsLoading &&
+              (nextAppId ? (
+                <Link
+                  href={`/applications/${nextAppId}`}
+                  className="px-4 py-2 rounded border text-sm"
+                >
+                  Next app →
+                </Link>
+              ) : (
+                <Link
+                  href="/dashboard?filter=mine&reviewFilter=awaiting"
+                  className="px-4 py-2 rounded border text-sm"
+                >
+                  Back to awaiting reviews
+                </Link>
+              ))}
+          </div>
+        </div>
+      ) : canReview ? (
+        <ReviewForm
+          uscId={uscId}
+          onSubmitted={reload}
+          nextAppId={nextAppId}
+          nextAppsLoading={nextAppsLoading}
+        />
+      ) : (
+        <div className="mt-6 border rounded-lg p-4">
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            {recusedAssignment
+              ? "You have recused yourself from this application and cannot submit a review."
+              : "You are not assigned to review this application."}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Field({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div>
+      <p className="text-sm font-semibold">
+        {label}
+      </p>
+
+      <p className="text-sm whitespace-pre-wrap">
+        {value || "—"}
+      </p>
+    </div>
+  );
+}
+
+export function ReviewForm({
+  uscId,
+  existingReview,
+  onSubmitted,
+  onCancel,
+  nextAppId,
+  nextAppsLoading,
+}: {
+  uscId: string;
+  existingReview?: Review;
+  onSubmitted: () => void | Promise<void>;
+  onCancel?: () => void;
+  nextAppId?: string | null;
+  nextAppsLoading?: boolean;
+}) {
+  const [scores, setScores] =
+    useState<Record<string, number | null>>({
+      experienceScore:
+        existingReview?.experienceScore ?? null,
+
+      researchScore:
+        existingReview?.researchScore ?? null,
+
+      qualityScore:
+        existingReview?.qualityScore ?? null,
+
+      overallScore:
+        existingReview?.overallScore ?? null,
+    });
+
+  const [notes, setNotes] =
+    useState(
+      existingReview?.notes ?? ""
+    );
+
+  const [submitting, setSubmitting] =
+    useState(false);
+
+  const allScored =
+    Object.values(scores).every(
+      (score) => score !== null
+    );
+
+  const isEditing =
+    Boolean(existingReview);
+
+  async function handleSubmit() {
+    if (!allScored) return;
+
+    setSubmitting(true);
+
+    try {
+      const response = await fetch(
+        "/api/reviews",
+        {
+          method:
+            isEditing ? "PATCH" : "POST",
+
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+
+          body: JSON.stringify({
+            uscId,
+
+            experienceScore:
+              scores.experienceScore as ReviewScore,
+
+            researchScore:
+              scores.researchScore as ReviewScore,
+
+            qualityScore:
+              scores.qualityScore as ReviewScore,
+
+            overallScore:
+              scores.overallScore as OverallScore,
+
+            notes,
+          }),
+        }
+      );
+
+      const result =
+        await response.json();
+
+      if (!response.ok) {
+        alert(
+          result.error ??
+            `Failed to ${
+              isEditing
+                ? "update"
+                : "submit"
+            } review.`
+        );
+
+        return;
+      }
+
+      await onSubmitted();
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="border rounded-lg p-4 mt-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="font-bold">
+          {isEditing
+            ? "Edit Your Review"
+            : "Your Review"}
+        </h2>
+
+        {isEditing && onCancel && (
+          <button
+            onClick={onCancel}
+            disabled={submitting}
+            className="px-3 py-1 rounded border text-sm disabled:opacity-40"
+          >
+            Cancel
+          </button>
+        )}
+      </div>
+
+      {CRITERIA.map((criterion) => {
+        const levels = Object.entries(
+          criterion.levels
+        );
+
+        return (
+          <div
+            key={criterion.key}
+            className="space-y-2"
+          >
+            <p className="text-sm font-semibold">
+              {criterion.label}
+            </p>
+
+            <div className="space-y-2">
+              {levels.map(
+                ([score, description]) => {
+                  const numericScore =
+                    Number(score);
+
+                  const selected =
+                    scores[criterion.key] ===
+                    numericScore;
+
+                  return (
+                    <button
+                      key={score}
+                      type="button"
+                      onClick={() =>
+                        setScores({
+                          ...scores,
+                          [criterion.key]:
+                            numericScore,
+                        })
+                      }
+                      className={`w-full text-left border rounded-lg px-3 py-2 text-sm transition ${
+                        selected
+                          ? "bg-black text-white dark:bg-white dark:text-black"
+                          : "hover:bg-gray-50 dark:hover:bg-gray-800"
+                      }`}
+                    >
+                      <span className="font-semibold">
+                        {score}
+                      </span>
+
+                      <span className="ml-3">
+                        {description}
+                      </span>
+                    </button>
+                  );
+                }
+              )}
+            </div>
+          </div>
+        );
+      })}
+
+      <div>
+        <p className="text-sm font-semibold mb-1">
+          Notes
+        </p>
+
+        <textarea
+          value={notes}
+          onChange={(event) =>
+            setNotes(event.target.value)
+          }
+          className="w-full border rounded p-2 text-sm bg-transparent"
+          rows={4}
+        />
+      </div>
+
+      <div className="flex items-center justify-between gap-4">
+        <button
+          onClick={handleSubmit}
+          disabled={
+            !allScored || submitting
+          }
+          className="px-4 py-2 rounded bg-black text-white dark:bg-white dark:text-black disabled:opacity-40"
+        >
+          {submitting
+            ? isEditing
+              ? "Saving…"
+              : "Submitting…"
+            : isEditing
+              ? "Save Changes"
+              : "Submit Review"}
+        </button>
+
+        {!isEditing &&
+          !nextAppsLoading &&
+          (nextAppId ? (
+            <Link
+              href={`/applications/${nextAppId}`}
+              className="px-4 py-2 rounded border text-sm"
+            >
+              Next app →
+            </Link>
+          ) : (
+            <Link
+              href="/dashboard?filter=mine&reviewFilter=awaiting"
+              className="px-4 py-2 rounded border text-sm"
+            >
+              Back to awaiting reviews
+            </Link>
+          ))}
+      </div>
+    </div>
+  );
+}
